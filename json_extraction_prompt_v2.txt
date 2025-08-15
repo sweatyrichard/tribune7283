@@ -1,0 +1,324 @@
+# Prompt (for your extractor model)
+
+You are an expert clinical information extractor. Read the medical record text and return a **single JSON object** following the schema and rules below. **Extract only what is explicitly stated. Do not infer or hallucinate.** If a field is not present, return `null`, `[]`, or `"unknown"` as specified.
+
+## General rules
+
+* Ignore non-clinical chatter (e.g., pets, lighting, laptops, cafeteria) unless it directly affects care.
+* Preserve numeric units from the note; also provide normalized forms where requested.
+* Represent uncertainty with `"status": "suspected"` when the note suggests but does not confirm (e.g., “suggesting early neuropathy”).
+* Capture **negations** explicitly (e.g., “Denies chest pain”).
+* If relative timing is used (e.g., “last month”), keep it as text in `approx_date` and leave `date` as `null`.
+* SNOMED CT: If you can map a finding/diagnosis, include both `code` and `term`; otherwise `code: null` and `term` from the note.
+* **Evidence fields:** Provide an `"evidence"` quote/paraphrase for all complex/inferred fields (enums, booleans, interpretations, categorizations, statuses). Do **not** add evidence for simple literals such as names, IDs, raw numeric values, or verbatim dates.
+
+## Output schema (JSON)
+
+```json
+{
+  "record_metadata": {
+    "patient_name": "string|null",
+    "medical_record_number": "string|null"
+  },
+  "demographics": {
+    "age_years": "number|null",
+    "sex": "male|female|other|unknown",
+    "race_ethnicity": "string|null",
+    "socioeconomic_class": "string|null"
+  },
+  "diagnoses": [
+    {
+      "condition": {
+        "snomed_code": "string|null",
+        "snomed_term": "string|null"
+      },
+      "status": "active|history|resolved|suspected|unknown",
+      "status_evidence": "string|null",
+      "diagnosis_date": "YYYY-MM-DD|null",
+      "approx_diagnosis_date": "string|null",
+      "approx_onset": "string|null",
+      "is_type2_diabetes": "boolean",
+      "is_type2_diabetes_evidence": "string|null",
+      "evidence": "string|null"
+    }
+  ],
+  "comorbidities": [
+    {
+      "condition": {
+        "snomed_code": "string|null",
+        "snomed_term": "string|null"
+      },
+      "status": "active|history|resolved|suspected|unknown",
+      "status_evidence": "string|null",
+      "evidence": "string|null"
+    }
+  ],
+  "medications": [
+    {
+      "drug_name": "string",
+      "dosage_text": "string|null",
+      "dose_amount_mg": "number|null",
+      "route": "string|null",
+      "frequency_text": "string|null",
+      "frequency_normalized": "qd|bid|tid|qid|qhs|prn|once|weekly|unknown",
+      "indication": "string|null"
+    }
+  ],
+  "adherence": {
+    "medication_adherence_behavior": "high_adherence|moderate_adherence|low_adherence|non_adherence|unknown",
+    "evidence": "string|null"
+  },
+  "vitals": {
+    "blood_pressure": "string|null",
+    "pulse_bpm": "number|null",
+    "temperature": "string|null"
+  },
+  "labs": [
+    {
+      "test_name": "string",
+      "value": "number|string",
+      "unit": "string|null",
+      "date": "YYYY-MM-DD|null",
+      "approx_date": "string|null",
+      "interpretation": "high|normal|low|unknown",
+      "interpretation_evidence": "string|null"
+    }
+  ],
+  "findings": [
+    {
+      "type": "symptom|sign|test_result|other",
+      "name": {
+        "snomed_code": "string|null",
+        "snomed_term": "string|null"
+      },
+      "status": "present|absent|suspected",
+      "evidence": "string"
+    }
+  ],
+  "subject_reported": {
+    "symptoms": ["string"],
+    "factors": ["string"]
+  },
+  "mental_health": {
+    "stress": "present|absent|unknown",
+    "evidence": "string|null",
+    "notes": "string|null"
+  },
+  "sleep": {
+    "issue": "present|absent|unknown",
+    "evidence": "string|null",
+    "notes": "string|null"
+  },
+  "physical_activity": {
+    "behavior": "active|some_activity|minimal_activity|sedentary|unknown",
+    "evidence": "string|null"
+  },
+  "lifestyle": {
+    "smoking_status": "current|former|never|unknown",
+    "smoking_status_evidence": "string|null",
+    "alcohol_use": "present|absent|unknown",
+    "alcohol_use_evidence": "string|null",
+    "nutrition_behavior": "healthy_diet|mostly_healthy_diet|mixed_diet|unhealthy_diet|unknown",
+    "nutrition_behavior_evidence": "string|null"
+  },
+  "major_diabetic_complication": {
+    "had_complication": "boolean",
+    "had_complication_evidence": "string|null",
+    "complications": [
+      {
+        "type": "amputation|retinopathy|nephropathy|neuropathy|skin_condition|kidney_damage|other",
+        "status": "confirmed|suspected",
+        "evidence": "string"
+      }
+    ]
+  },
+  "negations": ["string"],
+  "plan_next_steps": ["string"],
+  "uncertainties": ["string"],
+  "ignored_nonclinical": ["string"]
+}
+```
+
+## Normalization details
+
+* **Frequencies**: Map `BID→bid`, `TID→tid`, `QID→qid`, `once daily/QD→qd`. If “occasional” or unspecified → `unknown` (keep raw words in `frequency_text`).
+* **A1C interpretation**: ≥6.5 → `"high"`, 5.7–6.4 → `"high"` (prediabetes), <5.7 → `"normal"`. Put a short rationale in `interpretation_evidence` (e.g., “A1C 8.7% ≥ 6.5% threshold”).
+* **Blood pressure**: keep as text (e.g., `"150/95"`).
+* **Dates**: If only relative timing is given, set `date: null` and fill `approx_date` (e.g., `"last month"`).
+* **Behavioral categorization (mutually exclusive):**
+
+  * **Medication adherence** → `high_adherence` (“always/never misses”), `moderate_adherence` (“occasionally misses”), `low_adherence` (“frequently/regularly misses”), `non_adherence` (“not taking/refuses/stopped”), else `unknown`. Quote the supporting phrase in `evidence`.
+  * **Physical activity** → `active` (“exercises regularly/meets recs”), `some_activity` (“walks sometimes/occasional exercise”), `minimal_activity` (“rarely exercises”), `sedentary` (“no exercise/mostly sits/bedbound”), else `unknown`. Use `evidence`.
+  * **Nutrition** → `healthy_diet` (“balanced/whole foods/low sugar”), `mostly_healthy_diet` (“usually healthy with occasional lapses”), `mixed_diet` (clear mix healthy & unhealthy), `unhealthy_diet` (frequent sugary/fried/processed foods/minimal vegetables), else `unknown`. Use `nutrition_behavior_evidence`.
+* **Selection rule**: If multiple statements appear, choose the **most consistently supported** behavior in the **current note**; if conflicting without dominance, return `unknown`. Do **not** infer from plans (e.g., “will try to exercise”).
+
+## Return format
+
+Return only the JSON object. No prose.
+
+---
+
+# Worked example (using Example Medical Record #1)
+
+```json
+{
+  "record_metadata": {
+    "patient_name": "John Smith",
+    "medical_record_number": "1234"
+  },
+  "demographics": {
+    "age_years": 58,
+    "sex": "male",
+    "race_ethnicity": null,
+    "socioeconomic_class": null
+  },
+  "diagnoses": [
+    {
+      "condition": { "snomed_code": null, "snomed_term": "Type 2 diabetes mellitus" },
+      "status": "active",
+      "status_evidence": "Known history of Type 2 Diabetes (T2D)",
+      "diagnosis_date": null,
+      "approx_diagnosis_date": null,
+      "approx_onset": null,
+      "is_type2_diabetes": true,
+      "is_type2_diabetes_evidence": "Type 2 Diabetes (T2D) explicitly stated",
+      "evidence": "Known history of Type 2 Diabetes (T2D)"
+    }
+  ],
+  "comorbidities": [
+    {
+      "condition": { "snomed_code": null, "snomed_term": "Hypertension" },
+      "status": "active",
+      "status_evidence": "Hypertension, managed with Lisinopril 20 mg daily",
+      "evidence": "Other comorbidity includes hypertension"
+    }
+  ],
+  "medications": [
+    {
+      "drug_name": "Metformin",
+      "dosage_text": "500 mg BID",
+      "dose_amount_mg": 500,
+      "route": null,
+      "frequency_text": "BID",
+      "frequency_normalized": "bid",
+      "indication": "Type 2 diabetes mellitus"
+    },
+    {
+      "drug_name": "Insulin",
+      "dosage_text": "occasional injections",
+      "dose_amount_mg": null,
+      "route": null,
+      "frequency_text": "occasional",
+      "frequency_normalized": "unknown",
+      "indication": "Type 2 diabetes mellitus"
+    },
+    {
+      "drug_name": "Lisinopril",
+      "dosage_text": "20 mg daily",
+      "dose_amount_mg": 20,
+      "route": null,
+      "frequency_text": "daily",
+      "frequency_normalized": "qd",
+      "indication": "Hypertension"
+    }
+  ],
+  "adherence": {
+    "medication_adherence_behavior": "unknown",
+    "evidence": null
+  },
+  "vitals": {
+    "blood_pressure": null,
+    "pulse_bpm": null,
+    "temperature": null
+  },
+  "labs": [
+    {
+      "test_name": "Hemoglobin A1C",
+      "value": 8.7,
+      "unit": "%",
+      "date": null,
+      "approx_date": null,
+      "interpretation": "high",
+      "interpretation_evidence": "A1C 8.7% ≥ 6.5% threshold"
+    }
+  ],
+  "findings": [
+    {
+      "type": "symptom",
+      "name": { "snomed_code": null, "snomed_term": "Fatigue" },
+      "status": "present",
+      "evidence": "ongoing fatigue"
+    },
+    {
+      "type": "symptom",
+      "name": { "snomed_code": null, "snomed_term": "Blurred vision" },
+      "status": "present",
+      "evidence": "occasional blurred vision"
+    },
+    {
+      "type": "symptom",
+      "name": { "snomed_code": null, "snomed_term": "Peripheral neuropathy" },
+      "status": "suspected",
+      "evidence": "mild numbness in his feet, suggesting early peripheral neuropathy"
+    },
+    {
+      "type": "test_result",
+      "name": { "snomed_code": null, "snomed_term": "COVID-19 test negative" },
+      "status": "present",
+      "evidence": "tested negative for COVID-19 last month"
+    }
+  ],
+  "subject_reported": {
+    "symptoms": ["fatigue", "blurred vision", "mild numbness in feet"],
+    "factors": []
+  },
+  "mental_health": {
+    "stress": "unknown",
+    "evidence": null,
+    "notes": null
+  },
+  "sleep": {
+    "issue": "unknown",
+    "evidence": null,
+    "notes": null
+  },
+  "physical_activity": {
+    "behavior": "unknown",
+    "evidence": null
+  },
+  "lifestyle": {
+    "smoking_status": "unknown",
+    "smoking_status_evidence": "Patient could not recall if he still smokes",
+    "alcohol_use": "unknown",
+    "alcohol_use_evidence": null,
+    "nutrition_behavior": "unknown",
+    "nutrition_behavior_evidence": null
+  },
+  "major_diabetic_complication": {
+    "had_complication": true,
+    "had_complication_evidence": "suggesting early peripheral neuropathy",
+    "complications": [
+      {
+        "type": "neuropathy",
+        "status": "suspected",
+        "evidence": "suggesting early peripheral neuropathy"
+      }
+    ]
+  },
+  "negations": ["Denies chest pain"],
+  "plan_next_steps": [
+    "Schedule fasting glucose test in two weeks",
+    "Consider adjusting insulin dosage if glucose remains high",
+    "Reinforce medication adherence",
+    "Review dietary habits at next visit"
+  ],
+  "uncertainties": [
+    "Patient could not recall if he still smokes",
+    "Timing of COVID-19 negative test: last month (relative)"
+  ],
+  "ignored_nonclinical": [
+    "Cat lethargic",
+    "Flickering fluorescent lights in waiting area"
+  ]
+}
+```
